@@ -1,0 +1,54 @@
+name: docker
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # 不装 QEMU：Dockerfile 里两个构建阶段都是 --platform=$BUILDPLATFORM，
+      # node 与 go 全程跑在 runner 原生架构上，arm64 产物由 Go 交叉编译得到。
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 用 metadata-action 而非手写 tags：github.repository_owner 可能含大写，
+      # 而镜像名必须全小写，该 action 会自动归一化，手写会直接推送失败。
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/qb-guard
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 默认会附加 provenance attestation manifest（platform 为 unknown/unknown），
+          # 群晖等 NAS 上较老的 docker / containerd 拉取时会报 no matching manifest。
+          # 需要溯源时改回 true，并确认目标机器的 docker 支持 OCI artifact manifest。
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,230 @@
+# qb-guard 配置
+# 时长两种写法都接受：毫秒整数（5000 / 1209600000），或 Go 时长字符串（5s / 72h / 7d / 2w）。
+# 模块内 ban-duration 写 default 表示跟随全局。
+
+qbittorrent:
+  url: http://127.0.0.1:8080
+  username: admin
+  password: adminadmin
+  # ban = 常规封禁（断开连接）
+  # shadowban = qB EE 影子封禁（保持连接但不传输数据），需下载器开启 shadow_ban_enabled，
+  #             且该模式下 fast-pcb-test-percentage 不生效，请保持为 0
+  ban-method: ban
+
+# WebUI / API 监听
+server:
+  address: 0.0.0.0
+  http: 9091
+  # 允许跨源请求（回显 Origin + 放行凭据）。只在把前端单独部署到同主机的另一个
+  # 端口时才需要。会话 cookie 是 SameSite=Lax，跨主机的站点即使打开这项也登不上。
+  allow-cors: false
+
+# 主循环间隔
+check-interval: 5s
+# 全局封禁时长，模块未单独指定 ban-duration 时使用
+ban-duration: 14d
+# 状态落盘间隔
+persist-interval: 30s
+# 并发检查的任务数
+concurrency: 4
+# 状态与脚本、订阅缓存目录
+data-dir: /data
+
+# 流量统计（原 qb-stats 的全部功能，已并入本进程）
+stats:
+  # 采样间隔。每次采样向下载器请求一次任务列表与 server_state
+  sample-interval: 5m
+  # 以下三项同时是保留期与 WebUI 的展示窗口，两者恒等，不存在「写了不读」的历史数据。
+  # 想看到几年的趋势就把 daily-keep 调大，代码里没有上限校验。
+  recent-keep: 48h
+  hourly-keep: 30d
+  daily-keep: 365d
+
+# 命中这些网段的 Peer 跳过全部检查。bridge 网络下下载器看到的是内网 IP，会把整个
+# 内网网段加进来；host 网络下保留回环与链路本地即可。
+ignore-peers-from-addresses:
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+  - 127.0.0.0/8
+  - 169.254.0.0/16
+  - 100.64.0.0/10
+  - fc00::/7
+  - fe80::/10
+
+# Tracker 订阅聚合：把多个列表合并去重后写入下载器的「添加的 Tracker 列表」。
+# 下载器自带的 URL 订阅只支持一个地址，多源聚合需要在这里做。
+# 注意：启用后本服务接管 add_trackers，你在下载器里手改的条目会被覆盖；
+#       写入只影响新任务，已有任务不会补加 tracker。
+trackers:
+  enabled: false
+  # 自动刷新间隔，也支持毫秒整数
+  refresh-interval: 24h
+  # 以源 ID 为键的映射，与 IP 集订阅同一形状
+  sources:
+    # 两个上游列表都在 GitHub 上，而 raw.githubusercontent.com 在常见网络环境下
+    # 不可达（实测 HTTP 000），故统一走 gh.huoshen80.top 反代（实测 200）。
+    # 都取 best 集：精选列表体积小、可用率高。换源直接改 url 即可。
+    xiu2-best:
+      name: XIU2 精选
+      url: https://gh.huoshen80.top/https://raw.githubusercontent.com/XIU2/TrackersListCollection/master/best.txt
+      enabled: true
+    ngosang-best:
+      name: ngosang 精选
+      url: https://gh.huoshen80.top/https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt
+      enabled: true
+
+module:
+  # ---------------------------------------------------------------- PeerID 黑名单
+  # 规则格式：{"method":"...","content":"...","if":{...},"hit":"TRUE|FALSE|DEFAULT","miss":"..."}
+  # method: STARTS_WITH / ENDS_WITH / CONTAINS / EQUALS / LENGTH / REGEX
+  #   LENGTH 额外接受 min / max；REGEX 为全串匹配且大小写敏感，其余 method 忽略大小写
+  # hit / miss 默认 TRUE / DEFAULT；FALSE 表示"排除"，一旦命中立即短路且优先于任何 TRUE
+  # if 为可选的前置条件，只在它显式求值为 FALSE 时排除该规则。注意默认的 miss 是 DEFAULT
+  # 而不是 FALSE，所以想用它做白名单必须自己写 miss，例如：
+  #   {"method":"CONTAINS","content":"-hp","if":{"method":"STARTS_WITH","content":"-qB","miss":"FALSE"}}
+  # 上例含义：仅当客户端名以 -qB 开头时才检查 -hp 规则
+  peer-id-blacklist:
+    enabled: true
+    ban-duration: 72h
+    banned-peer-id:
+      - '{"method":"STARTS_WITH","content":"-hp"}'
+      - '{"method":"STARTS_WITH","content":"-xm"}'
+      - '{"method":"STARTS_WITH","content":"-dt"}'
+      - '{"method":"CONTAINS","content":"-rn0.0.0"}'
+      - '{"method":"STARTS_WITH","content":"-sd"}'
+      - '{"method":"STARTS_WITH","content":"-xf"}'
+      - '{"method":"STARTS_WITH","content":"-qd"}'
+      - '{"method":"STARTS_WITH","content":"-bn"}'
+      - '{"method":"STARTS_WITH","content":"-dl"}'
+      - '{"method":"STARTS_WITH","content":"-ts"}'
+      - '{"method":"STARTS_WITH","content":"-fg"}'
+      - '{"method":"STARTS_WITH","content":"-tt"}'
+      - '{"method":"STARTS_WITH","content":"-nx"}'
+      - '{"method":"CONTAINS","content":"cacao"}'
+      - '{"method":"EQUALS","content":"Unknown"}'
+      - '{"method":"EQUALS","content":"未知"}'
+
+  # ---------------------------------------------------------------- 客户端名称黑名单
+  client-name-blacklist:
+    enabled: true
+    ban-duration: 72h
+    banned-client-name:
+      - '{"method":"STARTS_WITH","content":"hp/torrent"}'
+      - '{"method":"STARTS_WITH","content":"hp "}'
+      - '{"method":"STARTS_WITH","content":"dt/torrent"}'
+      - '{"method":"STARTS_WITH","content":"dt "}'
+      - '{"method":"STARTS_WITH","content":"xm/torrent"}'
+      - '{"method":"STARTS_WITH","content":"xm "}'
+      - '{"method":"STARTS_WITH","content":"taipei-torrent"}'
+      - '{"method":"CONTAINS","content":"rain 0.0.0"}'
+      - '{"method":"CONTAINS","content":"gopeed dev"}'
+      - '{"method":"STARTS_WITH","content":"xfplay"}'
+      - '{"method":"CONTAINS","content":"StellarPlayer"}'
+      - '{"method":"CONTAINS","content":"SP "}'
+      - '{"method":"CONTAINS","content":"flashget"}'
+      - '{"method":"CONTAINS","content":"tudou"}'
+      - '{"method":"CONTAINS","content":"torrentstorm"}'
+      - '{"method":"CONTAINS","content":"qqdownload"}'
+      - '{"method":"STARTS_WITH","content":"qbittorrent/3.3.15"}'
+      - '{"method":"STARTS_WITH","content":"github.com/thank423/trafficconsume"}'
+      - '{"method":"STARTS_WITH","content":"ޭ__"}'
+      - '{"method":"STARTS_WITH","content":"Unknown ["}'
+      - '{"method":"STARTS_WITH","content":"Gopeed bt-exp"}'
+
+  # ---------------------------------------------------------------- IP / 端口黑名单
+  # 说明：不实现 GeoIP / ASN / 网络类型过滤——qB EE 自带这组过滤器（设置项
+  # 「中国未知节点」「媒体播放器」等），在 host 网络下已能正常工作，无需重复实现。
+  ip-address-blocker:
+    enabled: true
+    ban-duration: 72h
+    # 要拉黑的网段，写 CIDR（10.0.0.0/8、2001:db8::/32）或单个 IP（1.2.3.4）。
+    # 默认留空：不填就是不启用 IP 维度。留空是安全的，不必放占位值。
+    ips: []
+    # 要拉黑的来源端口，例如吸血客户端常用的固定端口。默认留空。
+    ports: []
+
+  # ---------------------------------------------------------------- 进度作弊检查器
+  progress-cheat-blocker:
+    enabled: true
+    ban-duration: 30d
+    # 小于此值的种子不检查（字节）。对端可能来不及同步正确进度，误报率高
+    minimum-size: 50000000
+    # 汇报进度与实测进度允许的最大差值（0.1 = 10%）
+    maximum-difference: 0.1
+    # 允许的进度倒退比例（0.07 = 7%）。设为 -1 或 0 禁用
+    rewind-maximum-difference: 0.07
+    # 同一任务累计下载量超过种子大小的客户端视为过量下载
+    block-excessive-clients: true
+    excessive-threshold: 1.5
+    # 同一用户的 IP 前缀长度，前缀相同的 IP 视为同一人
+    ipv4-prefix-length: 32
+    ipv6-prefix-length: 56
+    # 检测记录保留时长。调大能缓解针对本服务的「缓慢失忆攻击」，代价是磁盘 I/O
+    persist-duration: 14d
+    # 达标后的等待窗口：窗口内对方把进度补上就不封
+    max-wait-duration: 30s
+    # 快速测试：对方下载量达到种子大小的此比例时主动断开一次，预热进度重置检查。
+    # 设为 -1 或 0 禁用。shadowban 模式下请保持禁用
+    fast-pcb-test-percentage: 0.1
+    fast-pcb-test-block-duration: 15s
+
+  # ---------------------------------------------------------------- 自动连锁封禁
+  # 某个 IP 被封后，同前缀网段内的其它 Peer 一并封禁
+  auto-range-ban:
+    enabled: true
+    ban-duration: 7d
+    ipv4: 30
+    ipv6: 48
+
+  # ---------------------------------------------------------------- 多拨追猎
+  # 同一网段内大量 IP 同时下载同一任务，视为多拨 / PCDN
+  multi-dialing-blocker:
+    enabled: true
+    ban-duration: 15d
+    subnet-mask-length: 24
+    subnet-mask-v6-length: 56
+    tolerate-num-ipv4: 2
+    tolerate-num-ipv6: 5
+    # 连接记录保留时长。过长会因 DHCP 重分配 IP 导致误杀
+    cache-lifespan: 24h
+    # 网段一旦判定为多拨，是否无视缓存时长持续追猎其中的新 IP
+    keep-hunting: false
+    keep-hunting-time: 30d
+
+  # ---------------------------------------------------------------- 表达式规则引擎
+  # 脚本放在 <data-dir>/scripts/*.expr，语言为 expr（https://expr-lang.org）。
+  # 可用变量：
+  #   peer.ip / peer.port / peer.peerId / peer.clientName / peer.progress
+  #   peer.uploadSpeed / peer.downloadSpeed / peer.uploaded / peer.downloaded
+  #   peer.flags / peer.connection
+  #   torrent.id / torrent.name / torrent.hash / torrent.size / torrent.completedSize
+  #   torrent.progress / torrent.uploadSpeed / torrent.downloadSpeed / torrent.isPrivate
+  #   torrent.category / torrent.tags
+  # 返回值：true = 封禁；false = 不处理；1 = 封禁；2 = 跳过其余所有检查
+  # 表达式是纯表达式语言，没有反射与任意代码执行能力，写错只会在保存时报错
+  expression-engine:
+    enabled: true
+    ban-duration: 72h
+
+  # ---------------------------------------------------------------- IP 集规则订阅
+  # 支持纯 IP / CIDR、DAT/eMule 区间（start,end,level[,comment]）、# 与 // 注释
+  # rules 是以规则 ID 为键的映射；删掉某一项时该键会从配置里真正移除
+  ip-address-blocker-rules:
+    enabled: true
+    ban-duration: 72h
+    check-interval: 4h
+    # 默认留空：不预置任何第三方列表地址，避免开箱就把请求打到别人服务器上。
+    # 需要的话按下面的形状自己加一个，填的是列表文件地址，不是 tracker 地址：
+    #   my-list:
+    #     name: 我的列表
+    #     url: https://example.com/ipset.txt
+    #     enabled: true
+    rules: {}
+
+  # ---------------------------------------------------------------- 主动监测
+  active-monitoring:
+    enabled: true
+    traffic-monitoring:
+      # 每日上传流量告警阈值（字节），-1 禁用
+      daily: -1

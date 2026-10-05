@@ -1,0 +1,17 @@
+.git
+.github
+.gitignore
+docs
+qb-guard.exe
+dist
+data
+*.tmp
+test/config.test.yaml
+test/data
+test/guard.log
+test/.ab-out
+test/ui*.log
+test/shots
+__pycache__
+webui/node_modules
+webui/dist

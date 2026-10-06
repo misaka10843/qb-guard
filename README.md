@@ -6,6 +6,24 @@
 
 ---
 
+## 相关截图
+
+<details>
+<summary>点击查看</summary>
+
+<img width="1906" height="906" alt="image" src="https://github.com/user-attachments/assets/ed4cc288-f0b7-4bd1-b4ae-e647c5b544f6" />
+
+<img width="1898" height="894" alt="image" src="https://github.com/user-attachments/assets/6bd4b084-daef-44d9-b40b-3dc813b39607" />
+
+<img width="1904" height="912" alt="image" src="https://github.com/user-attachments/assets/03f1b8a0-cc49-42a2-9153-618fbbe481d2" />
+
+<img width="1887" height="900" alt="image" src="https://github.com/user-attachments/assets/48e14b7d-b7c3-4b7b-9f19-e996c2b6955c" />
+
+</details>
+
+
+---
+
 ## 核心特性
 
 ### 1. 全方位反吸血防护（参考 PeerBanHelper）

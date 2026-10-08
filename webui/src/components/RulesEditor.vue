@@ -13,7 +13,6 @@ const open = defineModel('open', { type: Boolean, default: false })
 
 const METHODS = ['STARTS_WITH', 'ENDS_WITH', 'CONTAINS', 'EQUALS', 'LENGTH', 'REGEX']
 const RESULTS = [
-  { value: '', label: '默认' },
   { value: 'TRUE', label: 'TRUE（命中）' },
   { value: 'FALSE', label: 'FALSE（排除）' },
   { value: 'DEFAULT', label: 'DEFAULT（继续）' },
@@ -38,11 +37,11 @@ const saving = ref(false)
 const expanded = ref(-1)
 
 function blank() {
-  return { method: 'STARTS_WITH', content: '', hit: '', miss: '', hasIf: false, if: null }
+  return { method: 'STARTS_WITH', content: '', hit: '', miss: '', hasIf: false, if: blankIf() }
 }
 
 function blankIf() {
-  return { method: 'STARTS_WITH', content: '', hit: '', miss: '' }
+  return { method: 'STARTS_WITH', content: '', min: 0, max: 0, hit: '', miss: '' }
 }
 
 function parse(raw) {
@@ -57,7 +56,7 @@ function parse(raw) {
         hit: o.hit || '',
         miss: o.miss || '',
         hasIf: !!o.if,
-        if: o.if ? { ...blankIf(), ...o.if } : null,
+        if: { ...blankIf(), ...(o.if || {}) },
       }
       return item
     } catch {
@@ -75,7 +74,13 @@ function serialize(r) {
     o.content = r.content
   }
   if (r.hasIf && r.if) {
-    o.if = { method: r.if.method, content: r.if.content }
+    o.if = { method: r.if.method }
+    if (r.if.method === 'LENGTH') {
+      o.if.min = Number(r.if.min) || 0
+      o.if.max = Number(r.if.max) || 0
+    } else {
+      o.if.content = r.if.content
+    }
     if (r.if.hit) o.if.hit = r.if.hit
     if (r.if.miss) o.if.miss = r.if.miss
   }
@@ -131,7 +136,13 @@ function describe(r) {
   const parts = [r.method]
   if (r.method === 'LENGTH') parts.push(`${r.min}~${r.max}`)
   else parts.push(`"${r.content}"`)
-  if (r.hasIf && r.if) parts.push(`若 ${r.if.method} "${r.if.content}"`)
+  if (r.hasIf && r.if) {
+    parts.push(
+      r.if.method === 'LENGTH'
+        ? `若 LENGTH ${r.if.min}~${r.if.max}`
+        : `若 ${r.if.method} "${r.if.content}"`,
+    )
+  }
   if (r.hit) parts.push(`命中→${r.hit}`)
   if (r.miss) parts.push(`未命中→${r.miss}`)
   return parts.join(' ')
@@ -260,7 +271,17 @@ watch(open, (v) => v && load())
                   :options="METHODS.map((m) => ({ value: m, label: m }))"
                 />
               </div>
-              <div class="flex flex-col gap-2">
+              <div v-if="r.if.method === 'LENGTH'" class="grid grid-cols-2 gap-3">
+                <div class="flex flex-col gap-2">
+                  <Label>最短长度</Label>
+                  <Input v-model="r.if.min" type="number" class="mono" />
+                </div>
+                <div class="flex flex-col gap-2">
+                  <Label>最长长度</Label>
+                  <Input v-model="r.if.max" type="number" class="mono" />
+                </div>
+              </div>
+              <div v-else class="flex flex-col gap-2">
                 <Label>条件内容</Label>
                 <Input v-model="r.if.content" class="mono" placeholder="例如 -qB" />
               </div>

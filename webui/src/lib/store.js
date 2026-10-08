@@ -6,6 +6,7 @@ export const store = reactive({
   status: null,
   stats: null,
   trackers: null,
+  geo: null,
   reloaded: 0,
   lastBan: null,
 })
@@ -27,6 +28,9 @@ export function connect() {
     },
     trackers: (data) => {
       store.trackers = data
+    },
+    geo: (data) => {
+      store.geo = data
     },
     ban: (data) => {
       store.lastBan = data

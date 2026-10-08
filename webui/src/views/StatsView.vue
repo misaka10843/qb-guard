@@ -71,6 +71,7 @@ const spanMs = computed(() => {
 })
 
 const tickFor = (span) => (span < 10 * 60 * 1000 ? hms : span < 48 * 3600 * 1000 ? stamp : dayLabel)
+
 const tipFor = (span) => (span < 48 * 3600 * 1000 ? stamp : dayLabel)
 
 function palette() {
@@ -82,6 +83,8 @@ function palette() {
     popover: cssColor('--popover'),
     up: cssColor('--chart-1'),
     down: cssColor('--chart-2'),
+    seed: cssColor('--chart-3'),
+    site: cssColor('--chart-5'),
   }
 }
 
@@ -172,6 +175,32 @@ function tooltipRows(c, title, rows) {
 const seriesMax = (pts) =>
   Math.max(...pts.map((p) => Math.max(p.uploaded, p.downloaded)), 0)
 
+function sparkOption(key, color) {
+  const pts = points.value
+  return {
+    animation: false,
+    grid: { left: 0, right: 0, top: 3, bottom: 0 },
+    xAxis: { type: 'category', show: false, boundaryGap: false, data: pts.map((p) => p.ts) },
+    yAxis: { type: 'value', show: false, min: 'dataMin', max: 'dataMax' },
+    series: [
+      {
+        type: 'line',
+        data: pts.map((p) => p[key] ?? 0),
+        smooth: 0.3,
+        showSymbol: false,
+        silent: true,
+        lineStyle: { width: 1.5, color },
+        areaStyle: { color: fade(color) },
+      },
+    ],
+  }
+}
+
+const sparkUpload = computed(() => sparkOption('uploaded', palette().up))
+const sparkDownload = computed(() => sparkOption('downloaded', palette().down))
+const sparkSeeding = computed(() => sparkOption('seeding', palette().seed))
+const sparkSites = computed(() => sparkOption('sites', palette().site))
+
 const trendOption = computed(() => {
   const pts = points.value
   const c = palette()
@@ -213,15 +242,6 @@ const trendOption = computed(() => {
     series: [line('上传', 'uploaded', c.up), line('下载', 'downloaded', c.down)],
   }
 })
-
-const tail = (count) => {
-  const slice = days.value.slice(-count)
-  const uploaded = slice.reduce((sum, p) => sum + p.uploaded, 0)
-  const downloaded = slice.reduce((sum, p) => sum + p.downloaded, 0)
-  return { uploaded, downloaded, days: slice.length }
-}
-const week = computed(() => tail(7))
-const month = computed(() => tail(30))
 
 const barDays = computed(() => days.value.slice(-30))
 
@@ -268,6 +288,8 @@ const barMeta = computed(() => {
     count: pts.length,
     first: pts[0].ts,
     last: pts[pts.length - 1].ts,
+    uploaded: pts.reduce((sum, p) => sum + p.uploaded, 0),
+    downloaded: pts.reduce((sum, p) => sum + p.downloaded, 0),
     peak: Math.max(...pts.map((p) => Math.max(p.uploaded, p.downloaded)), 0),
   }
 })
@@ -275,6 +297,57 @@ const barMeta = computed(() => {
 const totalRatio = computed(() =>
   global.value.downloaded > 0 ? global.value.uploaded / global.value.downloaded : null,
 )
+
+const topSites = computed(() => sites.value.slice(0, 10))
+
+const topSitesOption = computed(() => {
+  const c = palette()
+  const rows = [...topSites.value].reverse()
+  return {
+    textStyle: { fontFamily: FONT },
+    animationDuration: 400,
+    animationEasing: 'cubicOut',
+    grid: { left: 4, right: 64, top: 6, bottom: 2, containLabel: true },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow', shadowStyle: { color: alpha(c.fg, 0.05) } },
+      ...tooltipStyle(c, 'sites-tip'),
+      formatter: (params) => {
+        const row = rows[params[0].dataIndex]
+        return tooltipRows(c, row.site, [
+          [c.up, '上传', bytes(row.uploaded)],
+          [c.down, '下载', bytes(row.downloaded)],
+          [c.seed, '做种', `${number(row.seeding)} 个 · ${bytes(row.seeding_bytes)}`],
+        ])
+      },
+    },
+    xAxis: { type: 'value', show: false },
+    yAxis: {
+      type: 'category',
+      data: rows.map((r) => r.site),
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: c.muted, fontSize: 11, width: 96, overflow: 'truncate' },
+    },
+    series: [
+      {
+        type: 'bar',
+        data: rows.map((r) => r.uploaded),
+        barMaxWidth: 13,
+        itemStyle: { color: alpha(c.up, 0.85), borderRadius: [0, 4, 4, 0] },
+        emphasis: { itemStyle: { color: c.up } },
+        label: {
+          show: true,
+          position: 'right',
+          color: c.muted,
+          fontSize: 11,
+          fontFamily: FONT,
+          formatter: (p) => bytes(p.value),
+        },
+      },
+    ],
+  }
+})
 
 const STATES = {
   error: ['出错', 'destructive'],
@@ -351,47 +424,50 @@ watch(() => store.reloaded, (v) => v && load())
 
 <template>
   <div class="flex flex-col gap-4">
-    <div class="flex items-center gap-2">
+    <div class="flex flex-wrap items-center gap-2">
       <p class="flex-1 text-sm text-muted-foreground">
         按 tracker 域名归并站点。趋势点随采样间隔累积，进程重启不会丢历史。
       </p>
+      <Select v-model="range" :options="RANGES" class="h-8 w-40" />
       <Button variant="ghost" size="icon-sm" :loading="loading" title="刷新" @click="load">
         <RefreshCw />
       </Button>
     </div>
 
     <div data-slot="stat-cards" class="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <Card class="flex items-center gap-3">
-        <div class="flex size-9 items-center justify-center rounded-lg bg-muted">
+      <Card class="flex items-start gap-3">
+        <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
           <Upload class="size-4 text-muted-foreground" />
         </div>
-        <div class="min-w-0">
+        <div class="min-w-0 flex-1">
           <div class="flex items-center gap-1 text-xs text-muted-foreground">
             <span>累计上传</span>
             <Tip text="下载器开机以来的总上传量（alltime_ul），不是本服务启动以来的。下面一行是当前实时上传速率。" />
           </div>
           <div class="mono truncate text-lg font-semibold">{{ bytes(global.uploaded) }}</div>
           <div class="mono truncate text-xs text-muted-foreground">{{ speed(global.upspeed) }}</div>
+          <Chart data-slot="spark-upload" :option="sparkUpload" height="1.75rem" class="mt-1" />
         </div>
       </Card>
-      <Card class="flex items-center gap-3">
-        <div class="flex size-9 items-center justify-center rounded-lg bg-muted">
+      <Card class="flex items-start gap-3">
+        <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
           <Download class="size-4 text-muted-foreground" />
         </div>
-        <div class="min-w-0">
+        <div class="min-w-0 flex-1">
           <div class="flex items-center gap-1 text-xs text-muted-foreground">
             <span>累计下载</span>
             <Tip text="下载器开机以来的总下载量（alltime_dl）。下面一行是当前实时下载速率。" />
           </div>
           <div class="mono truncate text-lg font-semibold">{{ bytes(global.downloaded) }}</div>
           <div class="mono truncate text-xs text-muted-foreground">{{ speed(global.dlspeed) }}</div>
+          <Chart data-slot="spark-download" :option="sparkDownload" height="1.75rem" class="mt-1" />
         </div>
       </Card>
-      <Card class="flex items-center gap-3">
-        <div class="flex size-9 items-center justify-center rounded-lg bg-muted">
+      <Card class="flex items-start gap-3">
+        <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
           <Users class="size-4 text-muted-foreground" />
         </div>
-        <div class="min-w-0">
+        <div class="min-w-0 flex-1">
           <div class="flex items-center gap-1 text-xs text-muted-foreground">
             <span>做种 / 全部</span>
             <Tip text="左边是正在做种的任务数，右边是下载器里所有任务的总数（含暂停与已完成）。下面一行是做种任务的体积之和。" />
@@ -400,82 +476,36 @@ watch(() => store.reloaded, (v) => v && load())
             {{ number(global.seeding) }} / {{ number(global.total) }}
           </div>
           <div class="mono truncate text-xs text-muted-foreground">
-            {{ bytes(global.seeding_bytes) }}
+            做种体积 {{ bytes(global.seeding_bytes) }}
           </div>
+          <Chart data-slot="spark-seeding" :option="sparkSeeding" height="1.75rem" class="mt-1" />
         </div>
       </Card>
-      <Card class="flex items-center gap-3">
-        <div class="flex size-9 items-center justify-center rounded-lg bg-muted">
+      <Card class="flex items-start gap-3">
+        <div class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
           <Globe class="size-4 text-muted-foreground" />
         </div>
-        <div class="min-w-0">
+        <div class="min-w-0 flex-1">
           <div class="flex items-center gap-1 text-xs text-muted-foreground">
             <span>站点数</span>
-            <Tip text="从任务的 tracker 地址里归并出的站点个数（tracker.mikanani.me 记为 mikanani.me）。" />
+            <Tip text="从任务的 tracker 地址里归并出的站点个数（tracker.mikanani.me 记为 mikanani.me）。下面一行是总分享率。" />
           </div>
           <div class="mono truncate text-lg font-semibold">{{ number(global.sites) }}</div>
+          <div class="mono truncate text-xs text-muted-foreground">
+            总分享率 {{ totalRatio === null ? '∞' : totalRatio.toFixed(2) }}
+          </div>
+          <Chart data-slot="spark-sites" :option="sparkSites" height="1.75rem" class="mt-1" />
         </div>
       </Card>
     </div>
-
-    <Card data-slot="flow-overview">
-      <div class="flex flex-wrap items-center gap-1">
-        <h2 class="text-sm font-semibold">流量概览</h2>
-        <Tip
-          text="按天汇总的上传下载量。每一天只取能覆盖到它的最细一档：最近 48 小时用采样点、再往前用小时点、更早用日点，所以进程刚起也能看到当天的量，不必等到跨过第一个自然日界。近 7 日 / 近 30 日是最近若干个日点的合计。"
-        />
-        <span class="mono text-xs text-muted-foreground">已有 {{ days.length }} 天历史</span>
-      </div>
-
-      <div class="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <div class="rounded-lg border bg-muted/30 px-3 py-2.5">
-          <div class="text-xs text-muted-foreground">近 7 日上传</div>
-          <div class="mono text-base font-semibold">{{ bytes(week.uploaded) }}</div>
-          <div class="mono text-xs text-muted-foreground">下载 {{ bytes(week.downloaded) }}</div>
-        </div>
-        <div class="rounded-lg border bg-muted/30 px-3 py-2.5">
-          <div class="text-xs text-muted-foreground">近 30 日上传</div>
-          <div class="mono text-base font-semibold">{{ bytes(month.uploaded) }}</div>
-          <div class="mono text-xs text-muted-foreground">下载 {{ bytes(month.downloaded) }}</div>
-        </div>
-        <div class="rounded-lg border bg-muted/30 px-3 py-2.5">
-          <div class="text-xs text-muted-foreground">总分享率</div>
-          <div class="mono text-base font-semibold">
-            {{ totalRatio === null ? '∞' : totalRatio.toFixed(2) }}
-          </div>
-          <div class="mono text-xs text-muted-foreground">上传 ÷ 下载</div>
-        </div>
-        <div class="rounded-lg border bg-muted/30 px-3 py-2.5">
-          <div class="text-xs text-muted-foreground">做种体积</div>
-          <div class="mono text-base font-semibold">{{ bytes(global.seeding_bytes) }}</div>
-          <div class="mono text-xs text-muted-foreground">{{ number(global.seeding) }} 个任务</div>
-        </div>
-      </div>
-
-      <div v-if="!barMeta" class="py-8 text-center text-sm text-muted-foreground">
-        还没有采样点，稍后再看
-      </div>
-      <template v-else>
-        <div class="mt-5 flex items-end justify-between text-xs text-muted-foreground">
-          <span class="mono">{{ dayLabel(toMs(barMeta.first)) }}</span>
-          <span class="mono">
-            峰值 {{ bytes(barMeta.peak) }} · 最近 {{ barMeta.count }} 天
-          </span>
-          <span class="mono">{{ dayLabel(toMs(barMeta.last)) }}</span>
-        </div>
-        <Chart data-slot="daily-bars" :option="barsOption" height="11rem" class="mt-1" />
-      </template>
-    </Card>
 
     <Card>
       <div class="flex flex-wrap items-center gap-2">
         <div class="flex items-center gap-1">
           <h2 class="text-sm font-semibold">流量趋势</h2>
-          <Tip text="每个点是这段时间内的上传/下载增量，按时间排列。纵轴按本区间内的峰值自动缩放，所以换范围时形状会变。鼠标移到图上可以读具体某一点。" />
+          <Tip text="每个点是这段时间内的上传/下载增量，按时间排列。纵轴按本区间内的峰值自动缩放，所以换范围时形状会变。鼠标移到图上可以读具体某一点。上面的四张指标卡与这张图共用同一个时间范围。" />
         </div>
         <span class="mono text-xs text-muted-foreground">{{ points.length }} 个采样点</span>
-        <div class="flex-1" />
-        <Select v-model="range" :options="RANGES" class="h-8 w-40" />
       </div>
 
       <div v-if="points.length < 2" class="py-10 text-center text-sm text-muted-foreground">
@@ -490,6 +520,45 @@ watch(() => store.reloaded, (v) => v && load())
         class="mt-3"
       />
     </Card>
+
+    <div class="grid gap-4 lg:grid-cols-2">
+      <Card data-slot="daily-flow">
+        <div class="flex flex-wrap items-center gap-1">
+          <h2 class="text-sm font-semibold">每日流量</h2>
+          <Tip text="按天汇总的上传下载量。每一天只取能覆盖到它的最细一档：最近 48 小时用采样点、再往前用小时点、更早用日点，所以进程刚起也能看到当天的量，不必等到跨过第一个自然日界。" />
+          <div class="flex-1" />
+          <span class="mono text-xs text-muted-foreground">
+            近 {{ barMeta?.count || 0 }} 天 · ↑{{ bytes(barMeta?.uploaded) }} ↓{{
+              bytes(barMeta?.downloaded)
+            }}
+          </span>
+        </div>
+        <div v-if="!barMeta" class="py-16 text-center text-sm text-muted-foreground">
+          还没有采样点，稍后再看
+        </div>
+        <template v-else>
+          <Chart data-slot="daily-bars" :option="barsOption" height="13rem" class="mt-3" />
+          <div class="mt-1 flex items-center justify-between text-xs text-muted-foreground">
+            <span class="mono">{{ dayLabel(toMs(barMeta.first)) }}</span>
+            <span class="mono">峰值 {{ bytes(barMeta.peak) }}</span>
+            <span class="mono">{{ dayLabel(toMs(barMeta.last)) }}</span>
+          </div>
+        </template>
+      </Card>
+
+      <Card data-slot="site-ranking">
+        <div class="flex flex-wrap items-center gap-1">
+          <h2 class="text-sm font-semibold">站点上传排行</h2>
+          <Tip text="按各站点的累计上传量取前十。站点按任务的 tracker 域名归并，认不出域名的任务统一归到「其他」。鼠标悬停可看该站点的下载量与做种情况。" />
+          <div class="flex-1" />
+          <span class="mono text-xs text-muted-foreground">Top {{ topSites.length }}</span>
+        </div>
+        <div v-if="!topSites.length" class="py-16 text-center text-sm text-muted-foreground">
+          暂无站点数据
+        </div>
+        <Chart v-else data-slot="site-bars" :option="topSitesOption" height="14rem" class="mt-2" />
+      </Card>
+    </div>
 
     <Card padded="false" class="overflow-hidden" data-slot="torrents">
       <div class="flex flex-wrap items-center gap-1 border-b px-4 py-3">

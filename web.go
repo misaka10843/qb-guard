@@ -159,6 +159,8 @@ func setSessionCookie(w http.ResponseWriter, token string, ttl time.Duration) {
 	})
 }
 
+const failLimiterMaxKeys = 1 << 13
+
 type failLimiter struct {
 	mu     sync.Mutex
 	limit  int
@@ -182,30 +184,51 @@ func (f *failLimiter) key(addr netip.Addr) string {
 	return prefix.Masked().String()
 }
 
-func (f *failLimiter) blocked(addr netip.Addr) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	k := f.key(addr)
-	now := time.Now()
-	kept := make([]time.Time, 0, len(f.hits[k]))
-	for _, t := range f.hits[k] {
+func (f *failLimiter) prune(times []time.Time, now time.Time) []time.Time {
+	kept := times[:0]
+	for _, t := range times {
 		if now.Sub(t) < f.window {
 			kept = append(kept, t)
 		}
 	}
+	return kept
+}
+
+func (f *failLimiter) sweepKey(k string, now time.Time) {
+	kept := f.prune(f.hits[k], now)
 	if len(kept) == 0 {
 		delete(f.hits, k)
 	} else {
 		f.hits[k] = kept
 	}
-	return len(kept) >= f.limit
+}
+
+func (f *failLimiter) sweep(now time.Time) {
+	for k := range f.hits {
+		f.sweepKey(k, now)
+	}
+}
+
+func (f *failLimiter) blocked(addr netip.Addr) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := f.key(addr)
+	f.sweepKey(k, time.Now())
+	return len(f.hits[k]) >= f.limit
 }
 
 func (f *failLimiter) fail(addr netip.Addr) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	now := time.Now()
 	k := f.key(addr)
-	f.hits[k] = append(f.hits[k], time.Now())
+	if _, tracked := f.hits[k]; !tracked && len(f.hits) >= failLimiterMaxKeys {
+		f.sweep(now)
+		if len(f.hits) >= failLimiterMaxKeys {
+			return
+		}
+	}
+	f.hits[k] = append(f.hits[k], now)
 }
 
 func (f *failLimiter) reset(addr netip.Addr) {
@@ -394,6 +417,9 @@ func (a *App) routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /api/bans/{ip}", a.guard(a.handleDeleteBan, roleWrite))
 	mux.HandleFunc("GET /api/stats", a.guard(a.handleStats, roleRead))
 	mux.HandleFunc("GET /api/torrents", a.guard(a.handleTorrents, roleRead))
+
+	mux.HandleFunc("GET /api/geo", a.guard(a.handleGeo, roleRead))
+	mux.HandleFunc("POST /api/geo/refresh", a.guard(a.handleGeoRefresh, roleWrite))
 
 	mux.HandleFunc("GET /api/subscriptions", a.guard(a.handleSubscriptions, roleRead))
 	mux.HandleFunc("POST /api/subscriptions/refresh", a.guard(a.handleRefreshSubscriptions, roleWrite))
@@ -647,18 +673,12 @@ func (a *App) applyConfigPatch(patch map[string]any) ([]string, error) {
 		return nil, fmt.Errorf("序列化失败: %w", err)
 	}
 
-	tmp := a.configPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return nil, fmt.Errorf("写入临时文件失败: %w", err)
-	}
-	next, err := loadConfig(tmp)
+	next, err := parseConfig(data)
 	if err != nil {
-		_ = os.Remove(tmp)
 		return nil, fmt.Errorf("配置校验失败（未落盘）: %w", err)
 	}
-	if err := os.Rename(tmp, a.configPath); err != nil {
-		_ = os.Remove(tmp)
-		return nil, fmt.Errorf("替换配置文件失败: %w", err)
+	if err := os.WriteFile(a.configPath, data, 0o600); err != nil {
+		return nil, fmt.Errorf("写入配置文件失败: %w", err)
 	}
 
 	restart := a.restartFields(a.cfg.Load(), next)
@@ -775,6 +795,16 @@ var schemaSections = []sectionSchema{
 		{Key: "refresh-interval", Label: "刷新间隔", Type: "duration", Unit: "毫秒或 24h/1d",
 			Help: "多久重新拉一次订阅源。源列表变动很慢，一天一次足够"},
 		{Key: "sources", Label: "订阅源", Type: "trackerSources"},
+	}},
+	{Key: "geo", Label: "地理位置", Help: "按国家/地区统计封禁来源，数据来自本机缓存的 MaxMind 格式国家库。", Fields: []fieldSchema{
+		{Key: "enabled", Label: "启用", Type: "bool",
+			Help: "关闭后不再下载国家库，「地理位置」页只显示未识别"},
+		{Key: "mmdb-url", Label: "国家库地址", Type: "string",
+			Help: "MaxMind mmdb 格式的国家库下载地址。换源只需改这里，例如 country-lite.mmdb 或 GeoLite2-Country.mmdb"},
+		{Key: "refresh-interval", Label: "更新间隔", Type: "duration", Unit: "毫秒或 24h/7d",
+			Help: "多久重新下载一次国家库。各国 IP 段变动很慢，一周一次足够"},
+		{Key: "history-keep", Label: "封禁历史保留", Type: "duration", Unit: "毫秒或 30d/1y",
+			Help: "封禁流水保留多久。这个窗口决定地图「近 90 天」「全部」两档能看到多远"},
 	}},
 }
 
@@ -1290,11 +1320,13 @@ func (a *App) handleAddBan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleDeleteBan(w http.ResponseWriter, r *http.Request) {
-	ip := r.PathValue("ip")
-	if _, err := netip.ParseAddr(ip); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "IP 无法解析: " + ip})
+	raw := r.PathValue("ip")
+	addr, err := netip.ParseAddr(raw)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "IP 无法解析: " + raw})
 		return
 	}
+	ip := addr.Unmap().String()
 	if !a.bans.remove(ip) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": ip + " 不在封禁列表中"})
 		return

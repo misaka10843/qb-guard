@@ -1,7 +1,7 @@
-
 package main
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
 	"log"
@@ -267,6 +267,7 @@ type Config struct {
 	PersistInterval Duration       `yaml:"persist-interval"`
 	Stats           statsConfig    `yaml:"stats"`
 	Trackers        trackersConfig `yaml:"trackers"`
+	Geo             geoConfig      `yaml:"geo"`
 	Modules         ModulesConfig  `yaml:"module"`
 }
 
@@ -283,7 +284,7 @@ var renamedRuleKeys = map[string]string{
 
 var knownTopKeys = []string{
 	"qbittorrent", "server", "check-interval", "ban-duration", "ignore-peers-from-addresses",
-	"data-dir", "concurrency", "persist-interval", "stats", "trackers", "module",
+	"data-dir", "concurrency", "persist-interval", "stats", "trackers", "geo", "module",
 }
 
 var knownModuleKeys = []string{
@@ -323,8 +324,12 @@ func loadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseConfig(data)
+}
+
+func parseConfig(data []byte) (*Config, error) {
 	var cfg Config
-	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(false)
 	if err := decoder.Decode(&cfg); err != nil {
 		return nil, err
@@ -360,7 +365,29 @@ func loadConfig(path string) (*Config, error) {
 	if err := cfg.Trackers.validate(); err != nil {
 		return nil, err
 	}
+	if cfg.Geo.MMDBURL == "" && !geoSectionPresent(data) {
+		cfg.Geo.Enabled = true
+		cfg.Geo.MMDBURL = defaultGeoMMDBURL
+	}
+	if cfg.Geo.Enabled && cfg.Geo.MMDBURL == "" {
+		return nil, fmt.Errorf("geo.enabled 为 true 但 geo.mmdb-url 为空，无法下载地理库")
+	}
+	if cfg.Geo.RefreshInterval <= 0 {
+		cfg.Geo.RefreshInterval = Duration(7 * 24 * time.Hour)
+	}
+	if cfg.Geo.HistoryKeep <= 0 {
+		cfg.Geo.HistoryKeep = Duration(90 * 24 * time.Hour)
+	}
 	return &cfg, nil
+}
+
+func geoSectionPresent(data []byte) bool {
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	_, ok := raw["geo"]
+	return ok
 }
 
 func (m baseModule) duration(fallback time.Duration) time.Duration {
@@ -372,10 +399,17 @@ func (m baseModule) duration(fallback time.Duration) time.Duration {
 
 type banManager struct {
 	st      *State
+	log     *banLog
 	foreign map[string]struct{}
 	dropped map[string]struct{}
 	added   []string
 	removed bool
+}
+
+func (b *banManager) logEvent(ip, module string) {
+	if b.log != nil {
+		b.log.add(ip, module)
+	}
 }
 
 func (b *banManager) add(p *Peer, t *Torrent, res *Result) bool {
@@ -404,6 +438,7 @@ func (b *banManager) add(p *Peer, t *Torrent, res *Result) bool {
 		}
 		b.added = append(b.added, p.Key)
 		b.st.dirty = true
+		b.logEvent(ip, res.Module)
 		return true
 	}
 	b.st.Bans[ip] = &BanRecord{
@@ -416,6 +451,7 @@ func (b *banManager) add(p *Peer, t *Torrent, res *Result) bool {
 	}
 	b.added = append(b.added, p.Key)
 	b.st.dirty = true
+	b.logEvent(ip, res.Module)
 	return true
 }
 
@@ -427,6 +463,7 @@ func (b *banManager) addManual(ip string, until time.Time, reason string) BanRec
 	delete(b.dropped, ip)
 	b.removed = true
 	b.st.dirty = true
+	b.logEvent(ip, "manual")
 	return *rec
 }
 
@@ -601,6 +638,8 @@ type App struct {
 	auth *authService
 
 	trackers *trackerSet
+	geo      *geoDB
+	banLog   *banLog
 
 	configPath string
 	alertDay   string
@@ -638,6 +677,8 @@ func main() {
 		st:         st,
 		bans:       &banManager{st: st, foreign: map[string]struct{}{}},
 		stats:      newStatsStore(cfg.DataDir, func() statsWindow { return app.cfg.Load().Stats.window() }),
+		geo:        newGeoDB(filepath.Join(cfg.DataDir, "geo")),
+		banLog:     newBanLog(cfg.DataDir),
 		configPath: resolveConfigPath(configPath),
 		startedAt:  time.Now(),
 	}
@@ -657,10 +698,15 @@ func main() {
 	if err := app.stats.load(); err != nil {
 		logf("读取流量历史失败: %v", err)
 	}
+	if err := app.banLog.load(); err != nil {
+		logf("读取封禁历史失败: %v", err)
+	}
+	app.bans.log = app.banLog
 	app.auth = newAuthService(filepath.Join(cfg.DataDir, "sessions.json"))
 	app.hub = newEventHub()
 	app.trackers = newTrackerSet(filepath.Join(cfg.DataDir, "trackers"), qb)
 	app.trackers.notify = func() { app.hub.publish("trackers", app.trackers.snapshot()) }
+	app.geo.notify = func() { app.hub.publish("geo", app.geo.Status(app.cfg.Load().Geo)) }
 	if err := app.applyRuntime(); err != nil {
 		log.Fatalf("模块初始化失败: %v", err)
 	}
@@ -668,6 +714,7 @@ func main() {
 	if cfg.Trackers.Enabled {
 		app.trackers.Load(cfg.Trackers)
 	}
+	app.geo.Load(cfg.Geo)
 
 	shadow := app.shadowMode()
 	if shadow {
@@ -689,6 +736,8 @@ func main() {
 	go app.trackersLoop(stop)
 	go app.pruneLoop(stop)
 	go app.statsLoop(stop)
+	go app.banLogLoop(stop)
+	go app.geo.loop(func() geoConfig { return app.cfg.Load().Geo }, stop)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -700,6 +749,9 @@ func main() {
 		}
 		if err := app.stats.save(); err != nil {
 			logf("退出前写入流量历史失败: %v", err)
+		}
+		if err := app.banLog.save(app.cfg.Load().Geo.keep()); err != nil {
+			logf("退出前写入封禁历史失败: %v", err)
 		}
 		logf("已停止")
 		os.Exit(0)
@@ -1101,6 +1153,21 @@ func (a *App) statsSample() {
 		logf("写入流量历史失败: %v", err)
 	}
 	a.hub.publish("stats", a.stats.payload())
+}
+
+func (a *App) banLogLoop(stop <-chan struct{}) {
+	ticker := time.NewTicker(time.Duration(a.cfg.Load().PersistInterval))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := a.banLog.save(a.cfg.Load().Geo.keep()); err != nil {
+				logf("写入封禁历史失败: %v", err)
+			}
+		case <-stop:
+			return
+		}
+	}
 }
 
 func (a *App) subsInterval() time.Duration {

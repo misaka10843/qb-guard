@@ -7,6 +7,8 @@ const props = defineProps({
   height: { type: String, default: '16rem' },
 })
 
+const emit = defineEmits(['click'])
+
 const el = ref(null)
 const chart = shallowRef(null)
 let observer = null
@@ -14,6 +16,7 @@ let observer = null
 onMounted(() => {
   chart.value = echarts.init(el.value, null, { renderer: 'svg' })
   chart.value.setOption(props.option)
+  chart.value.on('click', (params) => emit('click', params))
   el.value.__chart = chart.value
   observer = new ResizeObserver(() => chart.value?.resize())
   observer.observe(el.value)

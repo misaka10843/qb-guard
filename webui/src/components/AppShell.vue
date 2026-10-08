@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   Boxes,
   Ban,
+  Globe2,
   Rss,
   Radar,
   BarChart3,
@@ -24,6 +25,7 @@ import {
 import OverviewView from '@/views/OverviewView.vue'
 import ModulesView from '@/views/ModulesView.vue'
 import BansView from '@/views/BansView.vue'
+import GeoView from '@/views/GeoView.vue'
 import SubscriptionsView from '@/views/SubscriptionsView.vue'
 import TrackersView from '@/views/TrackersView.vue'
 import StatsView from '@/views/StatsView.vue'
@@ -36,6 +38,7 @@ const nav = [
   { key: 'overview', label: '总览', icon: LayoutDashboard, comp: OverviewView },
   { key: 'modules', label: '检测模块', icon: Boxes, comp: ModulesView },
   { key: 'bans', label: '封禁', icon: Ban, comp: BansView },
+  { key: 'geo', label: '地理位置', icon: Globe2, comp: GeoView },
   { key: 'subs', label: 'IP 集订阅', icon: Rss, comp: SubscriptionsView },
   { key: 'trackers', label: 'Tracker 聚合', icon: Radar, comp: TrackersView },
   { key: 'stats', label: '流量统计', icon: BarChart3, comp: StatsView },

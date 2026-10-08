@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -68,6 +67,9 @@ func (r *Rule) compile() error {
 	case "STARTS_WITH", "ENDS_WITH", "CONTAINS", "EQUALS":
 		r.content = strings.ToLower(r.Content)
 	case "LENGTH":
+		if r.Max <= 0 || r.Min > r.Max {
+			return fmt.Errorf("LENGTH 需要 0 < max 且 min <= max，当前 min=%d max=%d", r.Min, r.Max)
+		}
 	case "REGEX":
 		re, err := regexp.Compile("^(?:" + r.Content + ")$")
 		if err != nil {
